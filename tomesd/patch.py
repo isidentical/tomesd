@@ -8,7 +8,8 @@ from .utils import isinstance_str, init_generator
 
 
 def compute_merge(x: torch.Tensor, tome_info: Dict[str, Any]) -> Tuple[Callable, ...]:
-    original_h, original_w = tome_info["size"]
+    original_h = tome_info["size_h"]
+    original_w = tome_info["size_w"]
     original_tokens = original_h * original_w
     downsample = int(math.ceil(math.sqrt(original_tokens // x.shape[1])))
 
@@ -24,11 +25,11 @@ def compute_merge(x: torch.Tensor, tome_info: Dict[str, Any]) -> Tuple[Callable,
             args["generator"] = init_generator(x.device)
         elif args["generator"].device != x.device:
             args["generator"] = init_generator(x.device, fallback=args["generator"])
-        
+
         # If the batch size is odd, then it's not possible for prompted and unprompted images to be in the same
         # batch, which causes artifacts with use_rand, so force it to be off.
         use_rand = False if x.shape[0] % 2 == 1 else args["use_rand"]
-        m, u = merge.bipartite_soft_matching_random2d(x, w, h, args["sx"], args["sy"], r, 
+        m, u = merge.bipartite_soft_matching_random2d(x, w, h, args["sx"], args["sy"], r,
                                                       no_rand=not use_rand, generator=args["generator"])
     else:
         m, u = (merge.do_nothing, merge.do_nothing)
@@ -64,7 +65,7 @@ def make_tome_block(block_class: Type[torch.nn.Module]) -> Type[torch.nn.Module]
             x = u_m(self.ff(m_m(self.norm3(x)))) + x
 
             return x
-    
+
     return ToMeBlock
 
 
@@ -139,7 +140,7 @@ def make_diffusers_tome_block(block_class: Type[torch.nn.Module]) -> Type[torch.
 
             # 3. Feed-forward
             norm_hidden_states = self.norm3(hidden_states)
-            
+
             if self.use_ada_layer_norm_zero:
                 norm_hidden_states = norm_hidden_states * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
 
@@ -166,6 +167,8 @@ def make_diffusers_tome_block(block_class: Type[torch.nn.Module]) -> Type[torch.
 def hook_tome_model(model: torch.nn.Module):
     """ Adds a forward pre hook to get the image size. This hook can be removed with remove_patch. """
     def hook(module, args):
+        module._tome_info["size_h"] = args[0].shape[2]
+        module._tome_info["size_w"] = args[0].shape[3]
         module._tome_info["size"] = (args[0].shape[2], args[0].shape[3])
         return None
 
@@ -196,7 +199,7 @@ def apply_patch(
      - ratio: The ratio of tokens to merge. I.e., 0.4 would reduce the total number of tokens by 40%.
               The maximum value for this is 1-(1/(sx*sy)). By default, the max is 0.75 (I recommend <= 0.5 though).
               Higher values result in more speed-up, but with more visual quality loss.
-    
+
     Args to tinker with if you want:
      - max_downsample [1, 2, 4, or 8]: Apply ToMe to layers with at most this amount of downsampling.
                                        E.g., 1 only applies to layers with no downsampling (4/15) while
@@ -226,6 +229,8 @@ def apply_patch(
 
     diffusion_model._tome_info = {
         "size": None,
+        "size_h": 512,
+        "size_w": 512,
         "hooks": [],
         "args": {
             "ratio": ratio,
@@ -275,5 +280,5 @@ def remove_patch(model: torch.nn.Module):
 
         if module.__class__.__name__ == "ToMeBlock":
             module.__class__ = module._parent
-    
+
     return model
